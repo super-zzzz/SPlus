@@ -1,0 +1,63 @@
+name: CI-driver-only
+
+on:
+  workflow_dispatch:
+    branches: [ master, dev, release-crack ]
+    tags: "crack/*"
+  push:
+    branches: [ release-crack ]
+    tags: "crack/*"
+
+run-name: "${{github.ref_name}}"
+
+jobs:
+  Build:
+    #strategy:
+    #  matrix:
+    #    #platform: [Win32, x64]
+    #    #qt-target: [win32_msvc2019, win64_msvc2019_64]
+    #    include:
+    #      - platform: Win32
+    #        qt-target: win32_msvc2019
+    #      - platform: x64
+    #        qt-target: win64_msvc2019_64
+
+    runs-on: windows-2019
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup msbuild
+        uses: microsoft/setup-msbuild@v1.1
+
+    #  - name: Do Tests
+    #    run: .\TestCI.cmd
+
+    #  - name: Build Sandboxie
+    #    run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=${{ matrix.platform }}
+
+      - name: Build Sandboxie 32 bit
+        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=Win32 -maxcpucount:8
+
+      - name: Build Sandboxie 64 bit
+        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
+
+      - name: Merging Builds
+        run: Installer\merge_builds.cmd
+
+      - name: Upload Sandboxie 32
+        uses: actions/upload-artifact@v2
+        with:
+          name: Sandboxie_x86
+          path: |
+            Installer/SbiePlus32/*
+          retention-days: 60
+
+      - name: Upload Sandboxie 64
+        uses: actions/upload-artifact@v2
+        with:
+          name: Sandboxie_x64
+          path: |
+            Installer/SbiePlus64/*
+          retention-days: 60

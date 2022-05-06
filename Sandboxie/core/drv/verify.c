@@ -565,7 +565,10 @@ _FX NTSTATUS KphValidateCertificate()
     BOOLEAN node_lock = FALSE;
     BOOLEAN node_pass = FALSE;
 
-    Verify_CertInfo.State = 0; // clear
+    // Crack here: Always yes!
+    Verify_CertInfo.State = 0;
+    Verify_CertInfo.valid = 1;
+    return STATUS_SUCCESS;
 
     if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
         goto CleanupExit;

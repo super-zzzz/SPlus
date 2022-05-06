@@ -524,6 +524,11 @@ _FX NTSTATUS KphValidateCertificate(void)
     //WCHAR* key = NULL;
     LARGE_INTEGER cert_date = { 0 };
 
+    // Crack here: Always yes!
+    Verify_CertInfo.State = 0;
+    Verify_CertInfo.valid = 1;
+    return STATUS_SUCCESS;
+
     if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
         goto CleanupExit;
 

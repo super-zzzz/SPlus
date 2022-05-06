@@ -3,10 +3,12 @@ name: CI-driver-only
 on:
   workflow_dispatch:
     branches: [ master, dev, release-crack ]
+    tags: "crack/*"
   push:
     branches: [ release-crack ]
-  pull_request:
-    branches: [ release-crack ]
+    tags: "crack/*"
+
+run-name: "${{github.ref_name}}"
 
 jobs:
   Build:

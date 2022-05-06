@@ -41,9 +41,12 @@ jobs:
       - name: Build Sandboxie 64 bit
         run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
 
-      - name: Merging Builds
-        run: Installer\merge_builds.cmd
+      - name: Copy Driver(x64)
+        run: Installer\copy_build_just_driver.cmd x64
 
+      - name: Copy Driver(x86)
+        run: Installer\copy_build_just_driver.cmd x86
+      
       - name: Upload Sandboxie 32
         uses: actions/upload-artifact@v2
         with:

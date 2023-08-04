@@ -513,7 +513,7 @@ _FX NTSTATUS KphValidateCertificate()
 
     // Crack here: Always yes!
     Verify_CertInfo.State = 0;
-    Verify_CertInfo.valid = 1;
+    Verify_CertInfo.active = 1;
     return STATUS_SUCCESS;
 
     if(!NT_SUCCESS(status = MyInitHash(&hashObj)))

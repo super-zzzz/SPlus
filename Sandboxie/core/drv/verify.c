@@ -558,10 +558,15 @@ _FX NTSTATUS KphValidateCertificate()
     LARGE_INTEGER cert_date = { 0 };
     LONG days = 0;
 
+    Verify_CertInfo.State = 0; // clear
     // Crack here: Always yes!
-    Verify_CertInfo.State = 0;
-    Verify_CertInfo.valid = 1;
-    return STATUS_SUCCESS;
+    Verify_CertInfo.active = 1;
+    Verify_CertInfo.type = eCertEternal;
+    Verify_CertInfo.level = eCertMaxLevel;
+    Verify_CertInfo.expirers_in_sec = 86400000;
+
+    status = STATUS_SUCCESS;
+    return status;
 
     if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
         goto CleanupExit;

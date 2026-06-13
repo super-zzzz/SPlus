@@ -570,6 +570,10 @@ _FX NTSTATUS KphValidateCertificate()
     Verify_CertInfo.active = 1;
     Verify_CertInfo.type = eCertEternal;
     Verify_CertInfo.level = eCertMaxLevel;
+    Verify_CertInfo.opt_desk = 1;
+    Verify_CertInfo.opt_net = 1;
+    Verify_CertInfo.opt_enc = 1;
+    Verify_CertInfo.opt_sec = 1;
     Verify_CertInfo.expirers_in_sec = 86400000;
 
     status = STATUS_SUCCESS;

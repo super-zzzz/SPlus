@@ -1,63 +1,182 @@
 name: CI-driver-only
 
 on:
-  workflow_dispatch:
-    branches: [ master, dev, release-crack ]
-    tags: "crack/*"
-  push:
-    branches: [ release-crack ]
-    tags: "crack/*"
+  workflow_call:
+    inputs:
+      checkout_ref:
+        description: 'Ref to check out and build.'
+        required: false
+        type: string
+      publish_release:
+        description: 'Create or replace a GitHub release.'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Tag name to use for the GitHub release.'
+        required: false
+        type: string
+      release_title:
+        description: 'Release title.'
+        required: false
+        type: string
 
-run-name: "${{github.ref_name}}"
+  workflow_dispatch:
+
+  push:
+    branches: [master, experimental, release-crack]
+    tags:
+      - 'crack/*'
+    paths-ignore:
+      # Case-sensitive paths to ignore on push events
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'MergeDbg.cmd'
+      - 'TestCI.cmd'
+      - '.github/codeql/codeql-config.yml'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/announcements.yml'
+      - '.github/workflows/codeql.yml'
+      - '.github/workflows/codespell.yml'
+      - '.github/workflows/hash.yml'
+      - '.github/workflows/lupdate.yml'
+      - '.github/workflows/stale.yml'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/update_copyright.yml'
+      - '.github/workflows/winget.yml'
+      - '.github/FUNDING.yml'
+      - '.github/dependabot.yml'
+      - 'Sandboxie/msgs/report/*.txt'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.png'
+      - '**/*.bmp'
+      - '**/LICENSE*'
+      - '**/license*'
+      - '**/README*'
+      - '**/ReadMe*'
+      - '**/INSTALL*'
+      - '**/AUTHORS'
+      - '**/COPYING'
+  pull_request:
+    branches: [master, experimental, release-crack]
+    paths-ignore:
+      # Case-sensitive paths to ignore on pull events
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'MergeDbg.cmd'
+      - 'TestCI.cmd'
+      - '.github/codeql/codeql-config.yml'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/announcements.yml'
+      - '.github/workflows/codeql.yml'
+      - '.github/workflows/codespell.yml'
+      - '.github/workflows/hash.yml'
+      - '.github/workflows/lupdate.yml'
+      - '.github/workflows/stale.yml'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/update_copyright.yml'
+      - '.github/workflows/winget.yml'
+      - '.github/FUNDING.yml'
+      - '.github/dependabot.yml'
+      - 'Sandboxie/msgs/report/*.txt'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.png'
+      - '**/*.bmp'
+      - '**/LICENSE*'
+      - '**/license*'
+      - '**/README*'
+      - '**/ReadMe*'
+      - '**/INSTALL*'
+      - '**/AUTHORS'
+      - '**/COPYING'
+
+run-name: "${{ github.ref_name }}"
 
 jobs:
-  Build:
-    #strategy:
-    #  matrix:
-    #    #platform: [Win32, x64]
-    #    #qt-target: [win32_msvc2019, win64_msvc2019_64]
-    #    include:
-    #      - platform: Win32
-    #        qt-target: win32_msvc2019
-    #      - platform: x64
-    #        qt-target: win64_msvc2019_64
+  Build_Driver:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: read
 
-    runs-on: windows-2019
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # - platform: Win32
+          #   artifact_arch: x86
+          - platform: x64
+            artifact_arch: x64
+          - platform: ARM64
+            artifact_arch: ARM64
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.ref }}
 
       - name: Setup msbuild
-        uses: microsoft/setup-msbuild@v1.1
+        uses: microsoft/setup-msbuild@v3
 
-    #  - name: Do Tests
-    #    run: .\TestCI.cmd
+      - name: Build Sandboxie ${{ matrix.artifact_arch }} driver
+        run: msbuild /t:build Sandboxie\SandboxDrv.sln /p:Configuration="SbieRelease" /p:Platform=${{ matrix.platform }} -maxcpucount:8
 
-    #  - name: Build Sandboxie
-    #    run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=${{ matrix.platform }}
-
-      - name: Build Sandboxie 32 bit
-        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=Win32 -maxcpucount:8
-
-      - name: Build Sandboxie 64 bit
-        run: msbuild /t:build Sandboxie\Sandbox.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
-
-      - name: Merging Builds
-        run: Installer\merge_builds.cmd
-
-      - name: Upload Sandboxie 32
-        uses: actions/upload-artifact@v2
+      - name: Upload Sandboxie ${{ matrix.artifact_arch }} driver
+        uses: actions/upload-artifact@v4
         with:
-          name: Sandboxie_x86
+          name: Sandboxie_Driver_${{ matrix.artifact_arch }}
           path: |
-            Installer/SbiePlus32/*
+            Sandboxie/Bin/${{ matrix.platform }}/SbieRelease/SbieDrv.sys
           retention-days: 60
 
-      - name: Upload Sandboxie 64
-        uses: actions/upload-artifact@v2
+  Publish_Release:
+    if: inputs.publish_release || startsWith(github.ref, 'refs/tags/crack/')
+    needs: Build_Driver
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download x64 driver
+        uses: actions/download-artifact@v4
         with:
-          name: Sandboxie_x64
-          path: |
-            Installer/SbiePlus64/*
-          retention-days: 60
+          name: Sandboxie_Driver_x64
+          path: release-assets/x64
+
+      - name: Download ARM64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: Sandboxie_Driver_ARM64
+          path: release-assets/ARM64
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          cp release-assets/x64/SbieDrv.sys release-files/SbieDrv_x64.sys
+          cp release-assets/ARM64/SbieDrv.sys release-files/SbieDrv_ARM64.sys
+
+      - name: Recreate GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+        run: |
+          set -euo pipefail
+          release_title="${RELEASE_TITLE:-${TAG_NAME#crack/}}"
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME" --yes
+          fi
+
+          gh release create "$TAG_NAME" release-files/* \
+            --title "$release_title" \
+            --notes "Sandboxie driver build for $release_title."

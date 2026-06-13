@@ -167,16 +167,18 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ inputs.release_tag || github.ref_name }}
           RELEASE_TITLE: ${{ inputs.release_title }}
         run: |
           set -euo pipefail
           release_title="${RELEASE_TITLE:-${TAG_NAME#crack/}}"
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release delete "$TAG_NAME" --yes
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME" --repo "$GH_REPO" --yes
           fi
 
           gh release create "$TAG_NAME" release-files/* \
+            --repo "$GH_REPO" \
             --title "$release_title" \
             --notes "Sandboxie driver build for $release_title."

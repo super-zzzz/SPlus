@@ -20,6 +20,10 @@ on:
         description: 'Release title.'
         required: false
         type: string
+      release_notes_extra:
+        description: 'Additional release notes.'
+        required: false
+        type: string
 
   workflow_dispatch:
 
@@ -170,9 +174,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ inputs.release_tag || github.ref_name }}
           RELEASE_TITLE: ${{ inputs.release_title }}
+          RELEASE_NOTES_EXTRA: ${{ inputs.release_notes_extra }}
         run: |
           set -euo pipefail
           release_title="${RELEASE_TITLE:-${TAG_NAME#crack/}}"
+          release_notes="Sandboxie driver build for $release_title."
+
+          if [[ -n "${RELEASE_NOTES_EXTRA:-}" ]]; then
+            release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_EXTRA}"
+          fi
 
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release delete "$TAG_NAME" --repo "$GH_REPO" --yes
@@ -181,4 +191,4 @@ jobs:
           gh release create "$TAG_NAME" release-files/* \
             --repo "$GH_REPO" \
             --title "$release_title" \
-            --notes "Sandboxie driver build for $release_title."
+            --notes "$release_notes"

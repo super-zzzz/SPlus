@@ -21,7 +21,76 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  Check_Driver_Workflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      driver_workflow_warning: ${{ steps.compare.outputs.driver_workflow_warning }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Compare driver workflow with upstream CI
+        id: compare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+          upstream_branch="master"
+
+          warn() {
+            local title="$1"
+            local message="$2"
+            echo "::warning title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "driver_workflow_warning<<EOF"
+              echo "${message}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+          if ! git fetch upstream "$upstream_branch" --depth=1; then
+            warn "Fetch upstream CI failed" "Could not fetch upstream branch '$upstream_branch' from $upstream_repo. Driver workflow drift check was skipped."
+            exit 0
+          fi
+
+          if ! git show "upstream/$upstream_branch:.github/workflows/main.yml" > upstream-main.yml; then
+            warn "Upstream CI missing" "Could not read .github/workflows/main.yml from upstream/$upstream_branch. Driver workflow drift check was skipped."
+            exit 0
+          fi
+
+          {
+            grep -E 'runs-on:|uses: actions/checkout@|uses: microsoft/setup-msbuild@' upstream-main.yml
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml
+          } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > upstream-driver.signature
+
+          {
+            grep -E 'runs-on:|uses: actions/checkout@|uses: microsoft/setup-msbuild@' .github/workflows/main-driver-only.yml
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' .github/workflows/main-driver-only.yml
+          } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > local-driver.signature
+
+          if ! diff -u upstream-driver.signature local-driver.signature; then
+            {
+              echo "### Driver workflow drift detected"
+              echo
+              echo "Upstream .github/workflows/main.yml driver build signature differs from local main-driver-only.yml."
+              echo "Review runner versions, action versions, platforms, and SandboxDrv.sln msbuild commands."
+            } >> "$GITHUB_STEP_SUMMARY"
+            warn "Driver workflow drift detected" "Upstream driver build workflow changed. Review .github/workflows/main-driver-only.yml against upstream .github/workflows/main.yml."
+          fi
+
   Prepare:
+    needs: Check_Driver_Workflow
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -152,7 +221,7 @@ jobs:
           echo "crack_tag=$crack_tag" >> "$GITHUB_OUTPUT"
 
   Package_Release:
-    needs: Prepare
+    needs: [Check_Driver_Workflow, Prepare]
     if: needs.Prepare.outputs.should_build == 'true'
     uses: ./.github/workflows/main-driver-only.yml
     permissions:
@@ -162,3 +231,4 @@ jobs:
       publish_release: true
       release_tag: ${{ needs.Prepare.outputs.crack_tag }}
       release_title: ${{ needs.Prepare.outputs.upstream_tag }}
+      release_notes_extra: ${{ needs.Check_Driver_Workflow.outputs.driver_workflow_warning }}

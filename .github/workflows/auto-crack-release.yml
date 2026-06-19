@@ -69,14 +69,30 @@ jobs:
             exit 0
           fi
 
+          awk '/^  Build_Driver:/{in_job=1} /^  Publish_Release:/{in_job=0} in_job {print}' \
+            .github/workflows/main-driver-only.yml > local-build-driver.yml
+          sdk_wdk_pattern='(sdk|wdk|windows[-_ ]?sdk|windows[-_ ]?driver|driver[-_ ]?kit|ewdk|setup[-_]?winsdk|setup[-_]?wdk|WindowsTargetPlatformVersion|PlatformToolset)'
+
           {
-            grep -E 'runs-on:|uses: actions/checkout@|uses: microsoft/setup-msbuild@' upstream-main.yml
-            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml
+            grep -m 1 -E 'runs-on:[[:space:]]*windows-' upstream-main.yml
+            grep -m 1 -E 'uses: actions/checkout@' upstream-main.yml
+            grep -m 1 -E 'uses: microsoft/setup-msbuild@' upstream-main.yml
+            grep -Ei "$sdk_wdk_pattern" upstream-main.yml || true
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml |
+              sed -nE 's/.*\/p:Platform=([^ "]+).*/driver-platform:\1/p'
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml |
+              sed -E 's/[[:space:]]+/ /g; s/^ *run: //; s#/p:Platform=[^ ]+#/p:Platform=<platform>#'
           } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > upstream-driver.signature
 
           {
-            grep -E 'runs-on:|uses: actions/checkout@|uses: microsoft/setup-msbuild@' .github/workflows/main-driver-only.yml
-            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' .github/workflows/main-driver-only.yml
+            grep -m 1 -E 'runs-on:[[:space:]]*windows-' local-build-driver.yml
+            grep -m 1 -E 'uses: actions/checkout@' local-build-driver.yml
+            grep -m 1 -E 'uses: microsoft/setup-msbuild@' local-build-driver.yml
+            grep -Ei "$sdk_wdk_pattern" local-build-driver.yml || true
+            grep -E '^[[:space:]]*- platform:' local-build-driver.yml |
+              sed -E 's/.*platform:[[:space:]]*([^ #]+).*/driver-platform:\1/'
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' local-build-driver.yml |
+              sed -E 's/[[:space:]]+/ /g; s/^ *run: //; s#/p:Platform=\$\{\{ matrix\.platform \}\}#/p:Platform=<platform>#'
           } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > local-driver.signature
 
           if ! diff -u upstream-driver.signature local-driver.signature; then
@@ -84,7 +100,7 @@ jobs:
               echo "### Driver workflow drift detected"
               echo
               echo "Upstream .github/workflows/main.yml driver build signature differs from local main-driver-only.yml."
-              echo "Review runner versions, action versions, platforms, and SandboxDrv.sln msbuild commands."
+              echo "Review runner versions, action versions, SDK/WDK setup, platforms, and SandboxDrv.sln msbuild commands."
             } >> "$GITHUB_STEP_SUMMARY"
             warn "Driver workflow drift detected" "Upstream driver build workflow changed. Review .github/workflows/main-driver-only.yml against upstream .github/workflows/main.yml."
           fi

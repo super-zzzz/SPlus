@@ -302,11 +302,20 @@ jobs:
           UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
-          mkdir -p release-files
-          cp release-assets/standard/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}.sys"
-          cp release-assets/standard/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}.sys"
-          cp release-assets/clearbl/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}-clearbl.sys"
-          cp release-assets/clearbl/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}-clearbl.sys"
+          mkdir -p \
+            release-files \
+            release-package/x64-standard \
+            release-package/ARM64-standard \
+            release-package/x64-clearbl \
+            release-package/ARM64-clearbl
+          cp release-assets/standard/x64/SbieDrv.sys release-package/x64-standard/SbieDrv.sys
+          cp release-assets/standard/ARM64/SbieDrv.sys release-package/ARM64-standard/SbieDrv.sys
+          cp release-assets/clearbl/x64/SbieDrv.sys release-package/x64-clearbl/SbieDrv.sys
+          cp release-assets/clearbl/ARM64/SbieDrv.sys release-package/ARM64-clearbl/SbieDrv.sys
+          (
+            cd release-package
+            zip -r "../release-files/SbieDrv-${UPSTREAM_TAG}.zip" .
+          )
 
       - name: Recreate GitHub release
         shell: bash

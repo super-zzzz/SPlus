@@ -9,6 +9,7 @@ run-name: "Auto crack release: Daily Check"
 
 jobs:
   Check_Upstream_Tag:
+    name: Check for a new upstream tag
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -87,8 +88,8 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/$GH_REPO/actions/workflows/auto-crack-release.yml/dispatches" \
-            -d "$payload" >/dev/null || fail "Dispatch build failed" "Could not dispatch auto-crack-release.yml for upstream tag '$upstream_tag'."
+            "https://api.github.com/repos/$GH_REPO/actions/workflows/build-crack-release.yaml/dispatches" \
+            -d "$payload" >/dev/null || fail "Dispatch build failed" "Could not dispatch build-crack-release.yaml for upstream tag '$upstream_tag'."
 
           {
             echo

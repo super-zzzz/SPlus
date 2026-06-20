@@ -1,0 +1,344 @@
+name: Build crack release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream tag to package. Empty means latest v*.*.* tag except v5.*.'
+        required: false
+        type: string
+      force:
+        description: 'Overwrite existing crack tag and release.'
+        required: false
+        type: boolean
+        default: false
+
+run-name: "${{ inputs.upstream_tag != '' && inputs.upstream_tag || 'Build crack release' }}"
+
+concurrency:
+  group: auto-crack-release
+  cancel-in-progress: false
+
+jobs:
+  Prepare:
+    name: Check upstream and prepare release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      should_build: ${{ steps.prepare.outputs.should_build }}
+      upstream_tag: ${{ steps.prepare.outputs.upstream_tag }}
+      crack_tag: ${{ steps.prepare.outputs.crack_tag }}
+      publish_latest: ${{ steps.prepare.outputs.publish_latest }}
+      release_target_commit: ${{ steps.prepare.outputs.release_target_commit }}
+      driver_workflow_warning: ${{ steps.compare.outputs.driver_workflow_warning }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check whether upstream driver build changed
+        id: compare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+          upstream_branch="master"
+
+          warn() {
+            local title="$1"
+            local message="$2"
+            echo "::warning title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "driver_workflow_warning<<EOF"
+              echo "${message}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+          if ! git fetch upstream "$upstream_branch" --depth=1; then
+            warn "Fetch upstream CI failed" "Could not fetch upstream branch '$upstream_branch' from $upstream_repo. Driver workflow drift check was skipped."
+            exit 0
+          fi
+
+          if ! git show "upstream/$upstream_branch:.github/workflows/main.yml" > upstream-main.yml; then
+            warn "Upstream CI missing" "Could not read .github/workflows/main.yml from upstream/$upstream_branch. Driver workflow drift check was skipped."
+            exit 0
+          fi
+
+          awk '/^  Build_Driver:/{in_job=1} /^  Publish_Release:/{in_job=0} in_job {print}' \
+            .github/workflows/build-driver.yaml > local-build-driver.yml
+          sdk_wdk_pattern='(sdk|wdk|windows[-_ ]?sdk|windows[-_ ]?driver|driver[-_ ]?kit|ewdk|setup[-_]?winsdk|setup[-_]?wdk|WindowsTargetPlatformVersion|PlatformToolset)'
+
+          {
+            grep -m 1 -E 'runs-on:[[:space:]]*windows-' upstream-main.yml
+            grep -m 1 -E 'uses: actions/checkout@' upstream-main.yml
+            grep -m 1 -E 'uses: microsoft/setup-msbuild@' upstream-main.yml
+            grep -Ei "$sdk_wdk_pattern" upstream-main.yml || true
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml |
+              sed -nE 's/.*\/p:Platform=([^ "]+).*/driver-platform:\1/p'
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' upstream-main.yml |
+              sed -E 's/[[:space:]]+/ /g; s/^ *run: //; s#/p:Platform=[^ ]+#/p:Platform=<platform>#'
+          } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > upstream-driver.signature
+
+          {
+            grep -m 1 -E 'runs-on:[[:space:]]*windows-' local-build-driver.yml
+            grep -m 1 -E 'uses: actions/checkout@' local-build-driver.yml
+            grep -m 1 -E 'uses: microsoft/setup-msbuild@' local-build-driver.yml
+            grep -Ei "$sdk_wdk_pattern" local-build-driver.yml || true
+            sed -nE 's/.*platform:[[:space:]]*\[([^]]+)\].*/\1/p' local-build-driver.yml |
+              tr ',' '\n' | sed -E 's/^[[:space:]]*|[[:space:]]*$//g; s/^/driver-platform:/'
+            grep -E 'msbuild /t:build Sandboxie\\SandboxDrv\.sln' local-build-driver.yml |
+              sed -E 's/[[:space:]]+/ /g; s/^ *run: //; s#/p:Platform=\$\{\{ matrix\.platform \}\}#/p:Platform=<platform>#'
+          } | sed -E 's/[[:space:]]+/ /g; s/^ //' | sort -u > local-driver.signature
+
+          if ! diff -u upstream-driver.signature local-driver.signature; then
+            warn "Driver workflow drift detected" "Upstream driver build workflow changed. Review .github/workflows/build-driver.yaml against upstream .github/workflows/main.yml."
+          fi
+
+      - name: Confirm upstream tag to crack
+        id: prepare
+        shell: bash
+        env:
+          INPUT_UPSTREAM_TAG: ${{ github.event.inputs.upstream_tag || '' }}
+          INPUT_FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            local title="$1"
+            local message="$2"
+            echo "::error title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          skip_existing() {
+            local message="$1"
+            echo "::notice title=Already built::${message}"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+            echo "crack_tag=$crack_tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          patch_branches=("crack-patches" "crack-patches-clearbl")
+          upstream_tag_pattern="v*.*.*"
+          excluded_tag_pattern="v5.*"
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+
+          echo "Fetching upstream. Git output is shown below."
+          git fetch upstream --tags --prune || fail "Fetch upstream failed" "Could not fetch tags from $upstream_repo."
+          git fetch origin "${patch_branches[@]}" --tags --prune ||
+            fail "Fetch patch branches failed" "Could not fetch one or more patch branches from origin: ${patch_branches[*]}. Push the missing branch or check repository permissions."
+
+          upstream_tag="${INPUT_UPSTREAM_TAG:-}"
+          if [[ -z "$upstream_tag" ]]; then
+            upstream_tag="$(git tag --sort=-version:refname --list "$upstream_tag_pattern" | awk '!/^v5\./ { print; exit }')"
+          fi
+          upstream_tag="${upstream_tag#refs/tags/}"
+
+          if [[ -z "$upstream_tag" ]]; then
+            fail "No upstream tag found" "No upstream tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found after fetching upstream."
+          fi
+
+          if [[ "$upstream_tag" != v*.*.* || "$upstream_tag" == v5.* ]]; then
+            fail "Unsupported upstream tag" "Tag '$upstream_tag' must match '$upstream_tag_pattern' and must not match '$excluded_tag_pattern'."
+          fi
+
+          git rev-parse -q --verify "refs/tags/$upstream_tag" >/dev/null ||
+            fail "Upstream tag missing" "Tag '$upstream_tag' is not available locally after fetching upstream."
+
+          crack_tag="crack/$upstream_tag"
+          force="${INPUT_FORCE:-false}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$crack_tag" >/dev/null 2>&1; then
+            if [[ "$force" == "true" ]]; then
+              git push origin ":refs/tags/$crack_tag" ||
+                fail "Delete existing tag failed" "force=true was requested, but deleting '$crack_tag' from origin failed."
+              git tag -d "$crack_tag" 2>/dev/null || true
+            else
+              skip_existing "Tag '$crack_tag' already exists on origin. Nothing to do."
+            fi
+          fi
+
+          if [[ "$force" == "true" ]]; then
+            for patch_branch in "${patch_branches[@]}"; do
+              git push origin ":refs/tags/build/$patch_branch/$upstream_tag" 2>/dev/null || true
+            done
+          fi
+
+          publish_latest=true
+          if latest_crack_tag="$(git ls-remote --tags --refs origin "refs/tags/crack/$upstream_tag_pattern" | sed -E 's#.*refs/tags/crack/##' | awk '!/^v5\./' | sort -V | tail -n1)"; then
+            if [[ -n "$latest_crack_tag" ]]; then
+              newest_tag="$(printf '%s\n%s\n' "$latest_crack_tag" "$upstream_tag" | sort -V | tail -n1)"
+              if [[ "$newest_tag" != "$upstream_tag" ]]; then
+                publish_latest=false
+              fi
+            fi
+          fi
+
+          release_target_commit=""
+          for patch_branch in "${patch_branches[@]}"; do
+            git rev-parse -q --verify "refs/remotes/origin/$patch_branch" >/dev/null ||
+              fail "Patch branch missing" "Remote branch origin/$patch_branch is not available."
+
+            if ! patch_base_tag="$(git describe --tags --abbrev=0 --match "$upstream_tag_pattern" --exclude "$excluded_tag_pattern" "refs/remotes/origin/$patch_branch")"; then
+              fail "Patch base tag missing" "No patch base tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found in origin/$patch_branch."
+            fi
+
+            mapfile -t patch_commits < <(git rev-list --reverse --no-merges "$patch_base_tag..refs/remotes/origin/$patch_branch")
+            if [[ "${#patch_commits[@]}" -eq 0 ]]; then
+              fail "Patch queue empty" "Patch range '$patch_base_tag..origin/$patch_branch' is empty."
+            fi
+
+            git reset --hard
+            git switch --detach -f "refs/tags/$upstream_tag" ||
+              fail "Create build snapshot failed" "Could not check out upstream tag '$upstream_tag' for '$patch_branch'."
+
+            if ! git cherry-pick "${patch_commits[@]}"; then
+              git status --short
+              fail "Cherry-pick failed" "Failed to apply patches from '$patch_base_tag..origin/$patch_branch' onto '$upstream_tag'. Check the conflict list above."
+            fi
+
+            git rm -r --ignore-unmatch .github/workflows
+            snapshot_tree="$(git write-tree)"
+            snapshot_commit="$(printf 'Crack build snapshot for %s (%s)\n' "$upstream_tag" "$patch_branch" | git commit-tree "$snapshot_tree")"
+            build_ref="build/$patch_branch/$upstream_tag"
+
+            git tag -f "$build_ref" "$snapshot_commit"
+            git push origin "refs/tags/$build_ref" --force ||
+              fail "Push build ref failed" "Could not push helper build ref '$build_ref' to origin."
+
+            if [[ -z "$release_target_commit" ]]; then
+              release_target_commit="$snapshot_commit"
+            fi
+          done
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "crack_tag=$crack_tag" >> "$GITHUB_OUTPUT"
+          echo "publish_latest=$publish_latest" >> "$GITHUB_OUTPUT"
+          echo "release_target_commit=$release_target_commit" >> "$GITHUB_OUTPUT"
+
+  Build_Drivers:
+    name: Build ${{ matrix.variant }} drivers
+    needs: Prepare
+    if: needs.Prepare.outputs.should_build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard
+            patch_branch: crack-patches
+          - variant: clearbl
+            patch_branch: crack-patches-clearbl
+    uses: ./.github/workflows/build-driver.yaml
+    permissions:
+      contents: write
+    with:
+      build_variant: ${{ matrix.variant }}
+      patch_branch: ${{ matrix.patch_branch }}
+      upstream_tag: ${{ needs.Prepare.outputs.upstream_tag }}
+      publish_release: false
+      artifact_name_prefix: ${{ format('{0}_', matrix.variant) }}
+
+  Publish_Release:
+    name: Publish combined driver release
+    needs: [Prepare, Build_Drivers]
+    if: needs.Prepare.outputs.should_build == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download standard x64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: standard_Sandboxie_Driver_x64
+          path: release-assets/standard/x64
+
+      - name: Download standard ARM64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: standard_Sandboxie_Driver_ARM64
+          path: release-assets/standard/ARM64
+
+      - name: Download clearbl x64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: clearbl_Sandboxie_Driver_x64
+          path: release-assets/clearbl/x64
+
+      - name: Download clearbl ARM64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: clearbl_Sandboxie_Driver_ARM64
+          path: release-assets/clearbl/ARM64
+
+      - name: Prepare release assets
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          cp release-assets/standard/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}.sys"
+          cp release-assets/standard/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}.sys"
+          cp release-assets/clearbl/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}-clearbl.sys"
+          cp release-assets/clearbl/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}-clearbl.sys"
+
+      - name: Recreate GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.Prepare.outputs.crack_tag }}
+          RELEASE_TARGET: ${{ needs.Prepare.outputs.release_target_commit }}
+          RELEASE_TITLE: ${{ needs.Prepare.outputs.upstream_tag }}
+          RELEASE_NOTES_EXTRA: ${{ needs.Prepare.outputs.driver_workflow_warning }}
+          RELEASE_IS_LATEST: ${{ needs.Prepare.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          release_title="${RELEASE_TITLE:-${TAG_NAME#crack/}}"
+          release_notes="Sandboxie driver build for $release_title."
+          latest_args=()
+
+          if [[ -n "${RELEASE_NOTES_EXTRA:-}" ]]; then
+            release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_EXTRA}"
+          fi
+
+          if [[ "${RELEASE_IS_LATEST:-true}" != "true" ]]; then
+            latest_args+=(--latest=false)
+          fi
+
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME" --repo "$GH_REPO" --yes
+          fi
+
+          gh release create "$TAG_NAME" release-files/* \
+            --repo "$GH_REPO" \
+            --target "$RELEASE_TARGET" \
+            --title "$release_title" \
+            --notes "$release_notes" \
+            "${latest_args[@]}"

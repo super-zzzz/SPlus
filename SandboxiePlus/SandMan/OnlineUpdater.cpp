@@ -186,6 +186,8 @@ void CGetUpdatesJob::Finish(QNetworkReply* pReply)
 						BlockListLen = 0;
 				}
 
+				BlockListLen = 0; /* CRACK_HERE */
+
 				if (BlockListLen < BlockList0.size())
 				{
 					theAPI->SetSecureParam("CertBlockList", BlockList0, BlockList0.size());

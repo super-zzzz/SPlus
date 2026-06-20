@@ -1319,6 +1319,10 @@ _FX NTSTATUS Api_SetSecureParam(PROCESS* proc, ULONG64* parms)
 
         status = SetRegValue(Api_ParamPath, name, data, data_len);
 
+        // CRACK_HERE: clear certificate blocklist to disable driver-level cert blocking
+        if (wcscmp(name, L"CertBlockList") == 0 || wcscmp(name, L"CertBlockListSig") == 0)
+            {  UCHAR dummy = 0; SetRegValue(Api_ParamPath, L"CertBlockList", &dummy, 0); }
+
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
     }

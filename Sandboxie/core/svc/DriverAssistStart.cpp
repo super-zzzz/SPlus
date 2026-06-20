@@ -276,6 +276,8 @@ driver_started:
         if (status != 0) // error
             BlockListLen = 0;
 
+        BlockListLen = 0; /* CRACK_HERE */
+
         if (BlockListLen < sizeof(BlockList0) - 1)
         {
             SbieApi_Call(API_SET_SECURE_PARAM, 3, L"CertBlockList", BlockList0, sizeof(BlockList0) - 1);

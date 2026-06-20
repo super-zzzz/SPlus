@@ -389,7 +389,7 @@ jobs:
     if: needs.Prepare.outputs.should_build == 'true'
     uses: ./.github/workflows/main-driver-only.yml
     permissions:
-      contents: read
+      contents: write
     with:
       checkout_ref: ${{ needs.Prepare.outputs.standard_build_ref }}
       publish_release: false
@@ -400,7 +400,7 @@ jobs:
     if: needs.Prepare.outputs.should_build == 'true'
     uses: ./.github/workflows/main-driver-only.yml
     permissions:
-      contents: read
+      contents: write
     with:
       checkout_ref: ${{ needs.Prepare.outputs.clearbl_build_ref }}
       publish_release: false

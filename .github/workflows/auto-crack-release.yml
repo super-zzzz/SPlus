@@ -13,8 +13,7 @@ on:
         type: boolean
         default: false
 
-  schedule:
-    - cron: '17 3 * * *'
+run-name: ${{ inputs.upstream_tag != '' && inputs.upstream_tag || 'Auto crack release' }}
 
 concurrency:
   group: auto-crack-release

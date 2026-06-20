@@ -1,0 +1,96 @@
+name: Auto crack release daily check
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+run-name: Auto crack release: Daily Check
+
+jobs:
+  Check_Upstream_Tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check latest upstream tag and dispatch build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            local title="$1"
+            local message="$2"
+            echo "::error title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+          upstream_tag_pattern="v*.*.*"
+          excluded_tag_pattern="v5.*"
+
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+
+          echo "Fetching upstream and origin tags."
+          git fetch upstream --tags --prune || fail "Fetch upstream failed" "Could not fetch tags from $upstream_repo."
+          git fetch origin --tags --prune || fail "Fetch origin tags failed" "Could not fetch tags from origin."
+
+          upstream_tag="$(git tag --sort=-version:refname --list "$upstream_tag_pattern" | awk '!/^v5\./ { print; exit }')"
+          if [[ -z "$upstream_tag" ]]; then
+            fail "No upstream tag found" "No upstream tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found."
+          fi
+
+          latest_built_tag="$(git ls-remote --tags --refs origin "refs/tags/crack/$upstream_tag_pattern" | sed -E 's#.*refs/tags/crack/##' | awk '!/^v5\./' | sort -V | tail -n1)"
+
+          {
+            echo "### Daily check"
+            echo
+            echo "- Latest upstream tag: \`$upstream_tag\`"
+            if [[ -n "$latest_built_tag" ]]; then
+              echo "- Latest built crack tag: \`$latest_built_tag\`"
+            else
+              echo "- Latest built crack tag: none"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$latest_built_tag" ]]; then
+            newest_tag="$(printf '%s\n%s\n' "$latest_built_tag" "$upstream_tag" | sort -V | tail -n1)"
+            if [[ "$newest_tag" == "$latest_built_tag" && "$latest_built_tag" != "$upstream_tag" ]]; then
+              echo "::notice title=No new upstream release::Latest built crack tag '$latest_built_tag' is newer than upstream '$upstream_tag'."
+              exit 0
+            fi
+
+            if [[ "$latest_built_tag" == "$upstream_tag" ]]; then
+              echo "::notice title=Already built::Upstream tag '$upstream_tag' is already built on origin."
+              exit 0
+            fi
+          fi
+
+          payload="$(printf '{"ref":"main","inputs":{"upstream_tag":"%s","force":"false"}}' "$upstream_tag")"
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/$GH_REPO/actions/workflows/auto-crack-release.yml/dispatches" \
+            -d "$payload" >/dev/null || fail "Dispatch build failed" "Could not dispatch auto-crack-release.yml for upstream tag '$upstream_tag'."
+
+          {
+            echo
+            echo "Dispatched build workflow for \`$upstream_tag\`."
+          } >> "$GITHUB_STEP_SUMMARY"

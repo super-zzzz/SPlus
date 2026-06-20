@@ -385,16 +385,20 @@ jobs:
         if: steps.prepare_assets.outputs.standard_complete == 'true'
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
-          git push origin ":refs/tags/build/crack-patches/${UPSTREAM_TAG}"
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/build/crack-patches/${UPSTREAM_TAG}"
 
       - name: Delete clearbl build tag
         if: steps.prepare_assets.outputs.clearbl_complete == 'true'
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
-          git push origin ":refs/tags/build/crack-patches-clearbl/${UPSTREAM_TAG}"
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/build/crack-patches-clearbl/${UPSTREAM_TAG}"

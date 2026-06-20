@@ -24,6 +24,11 @@ on:
         description: 'Additional release notes.'
         required: false
         type: string
+      artifact_name_prefix:
+        description: 'Prefix for uploaded workflow artifact names.'
+        required: false
+        type: string
+        default: ''
 
   workflow_dispatch:
 
@@ -133,7 +138,7 @@ jobs:
       - name: Upload Sandboxie ${{ matrix.artifact_arch }} driver
         uses: actions/upload-artifact@v4
         with:
-          name: Sandboxie_Driver_${{ matrix.artifact_arch }}
+          name: ${{ inputs.artifact_name_prefix }}Sandboxie_Driver_${{ matrix.artifact_arch }}
           path: |
             Sandboxie/Bin/${{ matrix.platform }}/SbieRelease/SbieDrv.sys
           retention-days: 60
@@ -150,13 +155,13 @@ jobs:
       - name: Download x64 driver
         uses: actions/download-artifact@v4
         with:
-          name: Sandboxie_Driver_x64
+          name: ${{ inputs.artifact_name_prefix }}Sandboxie_Driver_x64
           path: release-assets/x64
 
       - name: Download ARM64 driver
         uses: actions/download-artifact@v4
         with:
-          name: Sandboxie_Driver_ARM64
+          name: ${{ inputs.artifact_name_prefix }}Sandboxie_Driver_ARM64
           path: release-assets/ARM64
 
       - name: Prepare release assets

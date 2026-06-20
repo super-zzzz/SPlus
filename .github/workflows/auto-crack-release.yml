@@ -115,6 +115,9 @@ jobs:
       should_build: ${{ steps.prepare.outputs.should_build }}
       upstream_tag: ${{ steps.prepare.outputs.upstream_tag }}
       crack_tag: ${{ steps.prepare.outputs.crack_tag }}
+      publish_latest: ${{ steps.prepare.outputs.publish_latest }}
+      standard_build_ref: ${{ steps.prepare.outputs.standard_build_ref }}
+      clearbl_build_ref: ${{ steps.prepare.outputs.clearbl_build_ref }}
 
     steps:
       - name: Checkout code
@@ -152,7 +155,7 @@ jobs:
             exit 0
           }
 
-          patch_branch="crack-patches"
+          patch_branches=("crack-patches" "crack-patches-clearbl")
           upstream_tag_pattern="v*.*.*"
           excluded_tag_pattern="v5.*"
           upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
@@ -164,7 +167,8 @@ jobs:
 
           echo "Fetching upstream. Git output is shown below."
           git fetch upstream --tags --prune || fail "Fetch upstream failed" "Could not fetch tags from $upstream_repo."
-          git fetch origin "$patch_branch" --tags --prune || fail "Fetch patch branch failed" "Could not fetch origin/$patch_branch. Push the patch branch to origin or check repository permissions."
+          git fetch origin "${patch_branches[@]}" --tags --prune ||
+            fail "Fetch patch branches failed" "Could not fetch one or more patch branches from origin: ${patch_branches[*]}. Push the missing branch or check repository permissions."
 
           upstream_tag="${INPUT_UPSTREAM_TAG:-}"
           if [[ -z "$upstream_tag" ]]; then
@@ -182,18 +186,22 @@ jobs:
 
           git rev-parse -q --verify "refs/tags/$upstream_tag" >/dev/null ||
             fail "Upstream tag missing" "Tag '$upstream_tag' is not available locally after fetching upstream."
-          git rev-parse -q --verify "refs/remotes/origin/$patch_branch" >/dev/null ||
-            fail "Patch branch missing" "Remote branch origin/$patch_branch is not available."
+          for patch_branch in "${patch_branches[@]}"; do
+            git rev-parse -q --verify "refs/remotes/origin/$patch_branch" >/dev/null ||
+              fail "Patch branch missing" "Remote branch origin/$patch_branch is not available."
 
-          if ! patch_base_tag="$(git describe --tags --abbrev=0 --match "$upstream_tag_pattern" --exclude "$excluded_tag_pattern" "refs/remotes/origin/$patch_branch")"; then
-            fail "Patch base tag missing" "No patch base tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found in origin/$patch_branch."
-          fi
+            if ! patch_base_tag="$(git describe --tags --abbrev=0 --match "$upstream_tag_pattern" --exclude "$excluded_tag_pattern" "refs/remotes/origin/$patch_branch")"; then
+              fail "Patch base tag missing" "No patch base tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found in origin/$patch_branch."
+            fi
 
-          if [[ "$(git rev-parse "refs/tags/$patch_base_tag")" == "$(git rev-parse "refs/remotes/origin/$patch_branch")" ]]; then
-            fail "Patch queue empty" "origin/$patch_branch points directly at '$patch_base_tag'; there are no patch commits to apply."
-          fi
+            if [[ "$(git rev-parse "refs/tags/$patch_base_tag")" == "$(git rev-parse "refs/remotes/origin/$patch_branch")" ]]; then
+              fail "Patch queue empty" "origin/$patch_branch points directly at '$patch_base_tag'; there are no patch commits to apply."
+            fi
+          done
 
           crack_tag="crack/$upstream_tag"
+          standard_build_ref="build/crack-patches/$upstream_tag"
+          clearbl_build_ref="build/crack-patches-clearbl/$upstream_tag"
           force="${INPUT_FORCE:-false}"
 
           if git ls-remote --exit-code --tags origin "refs/tags/$crack_tag" >/dev/null 2>&1; then
@@ -206,45 +214,274 @@ jobs:
             fi
           fi
 
+          if [[ "$force" == "true" ]]; then
+            git push origin ":refs/tags/$standard_build_ref" 2>/dev/null || true
+            git push origin ":refs/tags/$clearbl_build_ref" 2>/dev/null || true
+          fi
+
+          publish_latest=true
+          if latest_crack_tag="$(git ls-remote --tags --refs origin "refs/tags/crack/$upstream_tag_pattern" | sed -E 's#.*refs/tags/crack/##' | awk '!/^v5\./' | sort -V | tail -n1)"; then
+            if [[ -n "$latest_crack_tag" ]]; then
+              newest_tag="$(printf '%s\n%s\n' "$latest_crack_tag" "$upstream_tag" | sort -V | tail -n1)"
+              if [[ "$newest_tag" != "$upstream_tag" ]]; then
+                publish_latest=false
+              fi
+            fi
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
+          echo "crack_tag=$crack_tag" >> "$GITHUB_OUTPUT"
+          echo "publish_latest=$publish_latest" >> "$GITHUB_OUTPUT"
+          echo "standard_build_ref=$standard_build_ref" >> "$GITHUB_OUTPUT"
+          echo "clearbl_build_ref=$clearbl_build_ref" >> "$GITHUB_OUTPUT"
+
+  Prepare_Standard_Build:
+    needs: Prepare
+    if: needs.Prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      snapshot_commit: ${{ steps.snapshot.outputs.snapshot_commit }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create standard build snapshot
+        id: snapshot
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+          BUILD_REF: ${{ needs.Prepare.outputs.standard_build_ref }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            local title="$1"
+            local message="$2"
+            echo "::error title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          patch_branch="crack-patches"
+          upstream_tag_pattern="v*.*.*"
+          excluded_tag_pattern="v5.*"
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+
+          git fetch upstream --tags --prune || fail "Fetch upstream failed" "Could not fetch tags from $upstream_repo."
+          git fetch origin "$patch_branch" --tags --prune || fail "Fetch patch branch failed" "Could not fetch origin/$patch_branch."
+
+          if ! patch_base_tag="$(git describe --tags --abbrev=0 --match "$upstream_tag_pattern" --exclude "$excluded_tag_pattern" "refs/remotes/origin/$patch_branch")"; then
+            fail "Patch base tag missing" "No patch base tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found in origin/$patch_branch."
+          fi
+
           mapfile -t patch_commits < <(git rev-list --reverse --no-merges "$patch_base_tag..refs/remotes/origin/$patch_branch")
           if [[ "${#patch_commits[@]}" -eq 0 ]]; then
             fail "Patch queue empty" "Patch range '$patch_base_tag..origin/$patch_branch' is empty."
           fi
 
-          build_branch="build-${crack_tag//\//-}"
-          if git show-ref --verify --quiet "refs/heads/$build_branch"; then
-            git branch -D "$build_branch" ||
-              fail "Delete local build branch failed" "Local branch '$build_branch' already exists, but deleting it failed."
-          fi
+          build_branch="build-${patch_branch//\//-}-${UPSTREAM_TAG}"
+          git show-ref --verify --quiet "refs/heads/$build_branch" && git branch -D "$build_branch"
+          git switch -c "$build_branch" "refs/tags/$UPSTREAM_TAG" ||
+            fail "Create build branch failed" "Could not create '$build_branch' from upstream tag '$UPSTREAM_TAG'."
 
-          git switch -c "$build_branch" "refs/tags/$upstream_tag" ||
-            fail "Create build branch failed" "Could not create '$build_branch' from upstream tag '$upstream_tag'."
           if ! git cherry-pick "${patch_commits[@]}"; then
             git status --short
-            fail "Cherry-pick failed" "Failed to apply patches from '$patch_base_tag..origin/$patch_branch' onto '$upstream_tag'. Check the conflict list in the log above."
+            fail "Cherry-pick failed" "Failed to apply patches from '$patch_base_tag..origin/$patch_branch' onto '$UPSTREAM_TAG'. Check the conflict list in the log above."
           fi
-          git tag -d "$crack_tag" 2>/dev/null || true
 
           git rm -r --ignore-unmatch .github/workflows
           snapshot_tree="$(git write-tree)"
-          snapshot_commit="$(printf 'Crack build snapshot for %s\n' "$upstream_tag" | git commit-tree "$snapshot_tree")"
-          git tag "$crack_tag" "$snapshot_commit"
-          git push origin "refs/tags/$crack_tag" ||
-            fail "Push crack tag failed" "Could not push '$crack_tag' to origin. If the log mentions workflow permissions, ensure the generated tag does not introduce .github/workflows files or use a token with workflow scope."
+          snapshot_commit="$(printf 'Crack build snapshot for %s (%s)\n' "$UPSTREAM_TAG" "$patch_branch" | git commit-tree "$snapshot_tree")"
+          echo "snapshot_commit=$snapshot_commit" >> "$GITHUB_OUTPUT"
+          git tag -f "$BUILD_REF" "$snapshot_commit"
+          git push origin "refs/tags/$BUILD_REF" --force ||
+            fail "Push build ref failed" "Could not push helper build ref '$BUILD_REF' to origin."
 
-          echo "should_build=true" >> "$GITHUB_OUTPUT"
-          echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
-          echo "crack_tag=$crack_tag" >> "$GITHUB_OUTPUT"
+  Prepare_Clearbl_Build:
+    needs: Prepare
+    if: needs.Prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
 
-  Package_Release:
-    needs: [Check_Driver_Workflow, Prepare]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create clearbl build snapshot
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+          BUILD_REF: ${{ needs.Prepare.outputs.clearbl_build_ref }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            local title="$1"
+            local message="$2"
+            echo "::error title=${title}::${message}"
+            {
+              echo "### ${title}"
+              echo
+              echo "${message}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          patch_branch="crack-patches-clearbl"
+          upstream_tag_pattern="v*.*.*"
+          excluded_tag_pattern="v5.*"
+          upstream_repo="https://github.com/sandboxie-plus/Sandboxie.git"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$upstream_repo" 2>/dev/null || git remote set-url upstream "$upstream_repo"
+
+          git fetch upstream --tags --prune || fail "Fetch upstream failed" "Could not fetch tags from $upstream_repo."
+          git fetch origin "$patch_branch" --tags --prune || fail "Fetch patch branch failed" "Could not fetch origin/$patch_branch."
+
+          if ! patch_base_tag="$(git describe --tags --abbrev=0 --match "$upstream_tag_pattern" --exclude "$excluded_tag_pattern" "refs/remotes/origin/$patch_branch")"; then
+            fail "Patch base tag missing" "No patch base tag matching '$upstream_tag_pattern' and excluding '$excluded_tag_pattern' was found in origin/$patch_branch."
+          fi
+
+          mapfile -t patch_commits < <(git rev-list --reverse --no-merges "$patch_base_tag..refs/remotes/origin/$patch_branch")
+          if [[ "${#patch_commits[@]}" -eq 0 ]]; then
+            fail "Patch queue empty" "Patch range '$patch_base_tag..origin/$patch_branch' is empty."
+          fi
+
+          build_branch="build-${patch_branch//\//-}-${UPSTREAM_TAG}"
+          git show-ref --verify --quiet "refs/heads/$build_branch" && git branch -D "$build_branch"
+          git switch -c "$build_branch" "refs/tags/$UPSTREAM_TAG" ||
+            fail "Create build branch failed" "Could not create '$build_branch' from upstream tag '$UPSTREAM_TAG'."
+
+          if ! git cherry-pick "${patch_commits[@]}"; then
+            git status --short
+            fail "Cherry-pick failed" "Failed to apply patches from '$patch_base_tag..origin/$patch_branch' onto '$UPSTREAM_TAG'. Check the conflict list in the log above."
+          fi
+
+          git rm -r --ignore-unmatch .github/workflows
+          snapshot_tree="$(git write-tree)"
+          snapshot_commit="$(printf 'Crack build snapshot for %s (%s)\n' "$UPSTREAM_TAG" "$patch_branch" | git commit-tree "$snapshot_tree")"
+          git tag -f "$BUILD_REF" "$snapshot_commit"
+          git push origin "refs/tags/$BUILD_REF" --force ||
+            fail "Push build ref failed" "Could not push helper build ref '$BUILD_REF' to origin."
+
+  Build_Standard:
+    needs: [Prepare, Prepare_Standard_Build]
     if: needs.Prepare.outputs.should_build == 'true'
     uses: ./.github/workflows/main-driver-only.yml
     permissions:
-      contents: write
+      contents: read
     with:
-      checkout_ref: ${{ needs.Prepare.outputs.crack_tag }}
-      publish_release: true
-      release_tag: ${{ needs.Prepare.outputs.crack_tag }}
-      release_title: ${{ needs.Prepare.outputs.upstream_tag }}
-      release_notes_extra: ${{ needs.Check_Driver_Workflow.outputs.driver_workflow_warning }}
+      checkout_ref: ${{ needs.Prepare.outputs.standard_build_ref }}
+      publish_release: false
+      artifact_name_prefix: standard_
+
+  Build_Clearbl:
+    needs: [Prepare, Prepare_Clearbl_Build]
+    if: needs.Prepare.outputs.should_build == 'true'
+    uses: ./.github/workflows/main-driver-only.yml
+    permissions:
+      contents: read
+    with:
+      checkout_ref: ${{ needs.Prepare.outputs.clearbl_build_ref }}
+      publish_release: false
+      artifact_name_prefix: clearbl_
+
+  Publish_Release:
+    needs: [Check_Driver_Workflow, Prepare, Prepare_Standard_Build, Build_Standard, Build_Clearbl]
+    if: needs.Prepare.outputs.should_build == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download standard x64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: standard_Sandboxie_Driver_x64
+          path: release-assets/standard/x64
+
+      - name: Download standard ARM64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: standard_Sandboxie_Driver_ARM64
+          path: release-assets/standard/ARM64
+
+      - name: Download clearbl x64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: clearbl_Sandboxie_Driver_x64
+          path: release-assets/clearbl/x64
+
+      - name: Download clearbl ARM64 driver
+        uses: actions/download-artifact@v4
+        with:
+          name: clearbl_Sandboxie_Driver_ARM64
+          path: release-assets/clearbl/ARM64
+
+      - name: Prepare release assets
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          cp release-assets/standard/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}.sys"
+          cp release-assets/standard/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}.sys"
+          cp release-assets/clearbl/x64/SbieDrv.sys "release-files/SbieDrv_x64-${UPSTREAM_TAG}-clearbl.sys"
+          cp release-assets/clearbl/ARM64/SbieDrv.sys "release-files/SbieDrv_ARM64-${UPSTREAM_TAG}-clearbl.sys"
+
+      - name: Recreate GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.Prepare.outputs.crack_tag }}
+          RELEASE_TARGET: ${{ needs.Prepare_Standard_Build.outputs.snapshot_commit }}
+          RELEASE_TITLE: ${{ needs.Prepare.outputs.upstream_tag }}
+          RELEASE_NOTES_EXTRA: ${{ needs.Check_Driver_Workflow.outputs.driver_workflow_warning }}
+          RELEASE_IS_LATEST: ${{ needs.Prepare.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          release_title="${RELEASE_TITLE:-${TAG_NAME#crack/}}"
+          release_notes="Sandboxie driver build for $release_title."
+          latest_args=()
+
+          if [[ -n "${RELEASE_NOTES_EXTRA:-}" ]]; then
+            release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_EXTRA}"
+          fi
+
+          if [[ "${RELEASE_IS_LATEST:-true}" != "true" ]]; then
+            latest_args+=(--latest=false)
+          fi
+
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME" --repo "$GH_REPO" --yes
+          fi
+
+          gh release create "$TAG_NAME" release-files/* \
+            --repo "$GH_REPO" \
+            --target "$RELEASE_TARGET" \
+            --title "$release_title" \
+            --notes "$release_notes" \
+            "${latest_args[@]}"

@@ -265,57 +265,72 @@ jobs:
   Publish_Release:
     name: Publish combined driver release
     needs: [Prepare, Build_Drivers]
-    if: needs.Prepare.outputs.should_build == 'true'
+    if: always() && needs.Prepare.outputs.should_build == 'true'
     permissions:
+      actions: read
       contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Download standard x64 driver
-        uses: actions/download-artifact@v4
-        with:
-          name: standard_Sandboxie_Driver_x64
-          path: release-assets/standard/x64
-
-      - name: Download standard ARM64 driver
-        uses: actions/download-artifact@v4
-        with:
-          name: standard_Sandboxie_Driver_ARM64
-          path: release-assets/standard/ARM64
-
-      - name: Download clearbl x64 driver
-        uses: actions/download-artifact@v4
-        with:
-          name: clearbl_Sandboxie_Driver_x64
-          path: release-assets/clearbl/x64
-
-      - name: Download clearbl ARM64 driver
-        uses: actions/download-artifact@v4
-        with:
-          name: clearbl_Sandboxie_Driver_ARM64
-          path: release-assets/clearbl/ARM64
-
       - name: Prepare release assets
+        id: prepare_assets
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
           UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
-          mkdir -p \
-            release-files \
-            release-package/x64-standard \
-            release-package/ARM64-standard \
-            release-package/x64-clearbl \
-            release-package/ARM64-clearbl
-          cp release-assets/standard/x64/SbieDrv.sys release-package/x64-standard/SbieDrv.sys
-          cp release-assets/standard/ARM64/SbieDrv.sys release-package/ARM64-standard/SbieDrv.sys
-          cp release-assets/clearbl/x64/SbieDrv.sys release-package/x64-clearbl/SbieDrv.sys
-          cp release-assets/clearbl/ARM64/SbieDrv.sys release-package/ARM64-clearbl/SbieDrv.sys
+
+          fail() {
+            echo "::error title=Prepare release assets failed::$1"
+            exit 1
+          }
+
+          artifact_specs=(
+            "standard_Sandboxie_Driver_x64|release-assets/standard/x64|x64-standard"
+            "standard_Sandboxie_Driver_ARM64|release-assets/standard/ARM64|ARM64-standard"
+            "clearbl_Sandboxie_Driver_x64|release-assets/clearbl/x64|x64-clearbl"
+            "clearbl_Sandboxie_Driver_ARM64|release-assets/clearbl/ARM64|ARM64-clearbl"
+          )
+
+          mkdir -p release-files release-package
+          artifacts_json="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?per_page=100")" ||
+            fail "Could not query workflow artifacts for run $RUN_ID."
+
+          available_count=0
+          missing_entries=()
+
+          for spec in "${artifact_specs[@]}"; do
+            IFS='|' read -r artifact_name artifact_path package_dir <<< "$spec"
+
+            if printf '%s\n' "$artifacts_json" | grep -F "\"name\":\"$artifact_name\"" >/dev/null; then
+              gh run download "$RUN_ID" --repo "$GH_REPO" --name "$artifact_name" --dir "$artifact_path" ||
+                fail "Could not download artifact '$artifact_name'."
+              mkdir -p "release-package/$package_dir"
+              cp "$artifact_path/SbieDrv.sys" "release-package/$package_dir/SbieDrv.sys" ||
+                fail "Artifact '$artifact_name' did not contain SbieDrv.sys."
+              available_count=$((available_count + 1))
+            else
+              missing_entries+=("$package_dir")
+            fi
+          done
+
+          if [[ "$available_count" -eq 0 ]]; then
+            fail "No driver artifacts were produced for this run, so no release zip can be created."
+          fi
+
           (
             cd release-package
             zip -r "../release-files/SbieDrv-${UPSTREAM_TAG}.zip" .
           )
+
+          if [[ "${#missing_entries[@]}" -gt 0 ]]; then
+            missing_note="Missing build outputs: $(IFS=', '; echo "${missing_entries[*]}")."
+            echo "missing_artifacts_note=$missing_note" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Recreate GitHub release
         shell: bash
@@ -326,6 +341,7 @@ jobs:
           RELEASE_TARGET: ${{ needs.Prepare.outputs.release_target_commit }}
           RELEASE_TITLE: ${{ needs.Prepare.outputs.upstream_tag }}
           RELEASE_NOTES_EXTRA: ${{ needs.Prepare.outputs.driver_workflow_warning }}
+          RELEASE_NOTES_MISSING: ${{ steps.prepare_assets.outputs.missing_artifacts_note }}
           RELEASE_IS_LATEST: ${{ needs.Prepare.outputs.publish_latest }}
         run: |
           set -euo pipefail
@@ -335,6 +351,10 @@ jobs:
 
           if [[ -n "${RELEASE_NOTES_EXTRA:-}" ]]; then
             release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_EXTRA}"
+          fi
+
+          if [[ -n "${RELEASE_NOTES_MISSING:-}" ]]; then
+            release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_MISSING}"
           fi
 
           if [[ "${RELEASE_IS_LATEST:-true}" != "true" ]]; then
@@ -351,3 +371,64 @@ jobs:
             --title "$release_title" \
             --notes "$release_notes" \
             "${latest_args[@]}"
+
+  Cleanup_Build_Refs:
+    name: Delete ${{ matrix.variant }} build tag
+    needs: [Prepare, Build_Drivers, Publish_Release]
+    if: always() && needs.Prepare.outputs.should_build == 'true' && needs.Publish_Release.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard
+            patch_branch: crack-patches
+          - variant: clearbl
+            patch_branch: crack-patches-clearbl
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check whether ${{ matrix.variant }} artifacts exist
+        id: artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error title=Artifact check failed::$1"
+            exit 1
+          }
+
+          artifact_names=(
+            "${VARIANT}_Sandboxie_Driver_x64"
+            "${VARIANT}_Sandboxie_Driver_ARM64"
+          )
+
+          artifacts_json="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?per_page=100")" ||
+            fail "Could not query workflow artifacts for run $RUN_ID."
+
+          for artifact_name in "${artifact_names[@]}"; do
+            if ! printf '%s\n' "$artifacts_json" | grep -F "\"name\":\"$artifact_name\"" >/dev/null; then
+              echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+
+      - name: Delete helper build tag
+        if: steps.artifacts.outputs.has_artifacts == 'true'
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          git push origin ":refs/tags/build/${{ matrix.patch_branch }}/${UPSTREAM_TAG}"

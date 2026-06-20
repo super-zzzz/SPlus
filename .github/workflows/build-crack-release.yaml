@@ -359,6 +359,24 @@ jobs:
           release_notes="Sandboxie driver build for $release_title."
           latest_args=()
 
+          if gh api "repos/sandboxie-plus/Sandboxie/releases/tags/${release_title}" >/dev/null 2>&1; then
+            upstream_release_page="$(gh api "repos/sandboxie-plus/Sandboxie/releases/tags/${release_title}" --jq '.html_url' 2>/dev/null || true)"
+            upstream_x64_installer="$(gh api "repos/sandboxie-plus/Sandboxie/releases/tags/${release_title}" --jq '.assets[] | select(.name | test("^Sandboxie-Plus-x64-.*\\.exe$")) | .browser_download_url' 2>/dev/null || true)"
+            upstream_arm64_installer="$(gh api "repos/sandboxie-plus/Sandboxie/releases/tags/${release_title}" --jq '.assets[] | select(.name | test("^Sandboxie-Plus-ARM64-.*\\.exe$")) | .browser_download_url' 2>/dev/null || true)"
+
+            if [[ -n "${upstream_release_page:-}" ]]; then
+              release_notes="${release_notes}"$'\n\n'"Upstream release page: ${upstream_release_page}"
+            fi
+
+            if [[ -n "${upstream_x64_installer:-}" ]]; then
+              release_notes="${release_notes}"$'\n'"Upstream x64 installer: ${upstream_x64_installer}"
+            fi
+
+            if [[ -n "${upstream_arm64_installer:-}" ]]; then
+              release_notes="${release_notes}"$'\n'"Upstream ARM64 installer: ${upstream_arm64_installer}"
+            fi
+          fi
+
           if [[ -n "${RELEASE_NOTES_EXTRA:-}" ]]; then
             release_notes="${release_notes}"$'\n\n'"Warning: ${RELEASE_NOTES_EXTRA}"
           fi

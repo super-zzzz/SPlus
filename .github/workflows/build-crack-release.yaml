@@ -302,6 +302,8 @@ jobs:
 
           available_count=0
           missing_entries=()
+          standard_complete=true
+          clearbl_complete=true
 
           for spec in "${artifact_specs[@]}"; do
             IFS='|' read -r artifact_name artifact_path package_dir <<< "$spec"
@@ -315,6 +317,11 @@ jobs:
               available_count=$((available_count + 1))
             else
               missing_entries+=("$package_dir")
+              if [[ "$artifact_name" == standard_* ]]; then
+                standard_complete=false
+              else
+                clearbl_complete=false
+              fi
             fi
           done
 
@@ -331,6 +338,9 @@ jobs:
             missing_note="Missing build outputs: $(IFS=', '; echo "${missing_entries[*]}")."
             echo "missing_artifacts_note=$missing_note" >> "$GITHUB_OUTPUT"
           fi
+
+          echo "standard_complete=$standard_complete" >> "$GITHUB_OUTPUT"
+          echo "clearbl_complete=$clearbl_complete" >> "$GITHUB_OUTPUT"
 
       - name: Recreate GitHub release
         shell: bash
@@ -371,64 +381,20 @@ jobs:
             --title "$release_title" \
             --notes "$release_notes" \
             "${latest_args[@]}"
-
-  Cleanup_Build_Refs:
-    name: Delete ${{ matrix.variant }} build tag
-    needs: [Prepare, Build_Drivers, Publish_Release]
-    if: always() && needs.Prepare.outputs.should_build == 'true' && needs.Publish_Release.result == 'success'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: standard
-            patch_branch: crack-patches
-          - variant: clearbl
-            patch_branch: crack-patches-clearbl
-    permissions:
-      actions: read
-      contents: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check whether ${{ matrix.variant }} artifacts exist
-        id: artifacts
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          VARIANT: ${{ matrix.variant }}
-        run: |
-          set -euo pipefail
-
-          fail() {
-            echo "::error title=Artifact check failed::$1"
-            exit 1
-          }
-
-          artifact_names=(
-            "${VARIANT}_Sandboxie_Driver_x64"
-            "${VARIANT}_Sandboxie_Driver_ARM64"
-          )
-
-          artifacts_json="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?per_page=100")" ||
-            fail "Could not query workflow artifacts for run $RUN_ID."
-
-          for artifact_name in "${artifact_names[@]}"; do
-            if ! printf '%s\n' "$artifacts_json" | grep -F "\"name\":\"$artifact_name\"" >/dev/null; then
-              echo "has_artifacts=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-
-          echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
-
-      - name: Delete helper build tag
-        if: steps.artifacts.outputs.has_artifacts == 'true'
+      - name: Delete standard build tag
+        if: steps.prepare_assets.outputs.standard_complete == 'true'
         shell: bash
         env:
           UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
         run: |
           set -euo pipefail
-          git push origin ":refs/tags/build/${{ matrix.patch_branch }}/${UPSTREAM_TAG}"
+          git push origin ":refs/tags/build/crack-patches/${UPSTREAM_TAG}"
+
+      - name: Delete clearbl build tag
+        if: steps.prepare_assets.outputs.clearbl_complete == 'true'
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.Prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          git push origin ":refs/tags/build/crack-patches-clearbl/${UPSTREAM_TAG}"
